@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import DealsCompoenents from './components/DealsCompoenents';
+import AufgabenComponent from './components/AufgabenComponent';
 import PlaceholderPage from './components/PlaceholderPage';
 import { cn } from './lib/utils';
 
@@ -134,6 +135,7 @@ export default function App() {
 
         <Routes>
           <Route path="/deals" element={<DealsCompoenents />} />
+          <Route path="/aufgaben" element={<AufgabenComponent />} />
           <Route path="/:pageSlug" element={<PlaceholderPage />} />
           <Route path="*" element={<Navigate to="/deals" replace />} />
         </Routes>
