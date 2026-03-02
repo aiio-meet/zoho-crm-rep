@@ -27,6 +27,10 @@ import {
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import DealsCompoenents from './components/DealsCompoenents';
 import AufgabenComponent from './components/AufgabenComponent';
+import AnrufeComponent from './components/AnrufeComponent';
+import ProdukteComponent from './components/ProdukteComponent';
+import MeetingsComponent from './components/MeetingsComponent';
+import HomeComponent from './components/HomeComponent';
 import PlaceholderPage from './components/PlaceholderPage';
 import { cn } from './lib/utils';
 
@@ -126,18 +130,22 @@ export default function App() {
         </header>
 
         <div className="h-10 bg-[#2c3e50] text-white flex items-center px-4 gap-6 shrink-0 text-sm">
-          <span className="opacity-80 hover:opacity-100 cursor-pointer border-b-2 border-transparent hover:border-white h-full flex items-center">Home</span>
-          <span className="font-semibold border-b-2 border-white h-full flex items-center">Module</span>
+          <NavLink to="/home" className={({ isActive }) => cn("h-full flex items-center px-1 border-b-2", isActive ? "border-white font-semibold" : "border-transparent opacity-80 hover:opacity-100")}>Home</NavLink>
+          <NavLink to="/deals" className={({ isActive }) => cn("h-full flex items-center px-1 border-b-2", isActive ? "border-white font-semibold" : "border-transparent opacity-80 hover:opacity-100")}>Module</NavLink>
           <span className="opacity-80 hover:opacity-100 cursor-pointer border-b-2 border-transparent hover:border-white h-full flex items-center">Berichte</span>
           <span className="opacity-80 hover:opacity-100 cursor-pointer border-b-2 border-transparent hover:border-white h-full flex items-center">Analytik</span>
           <span className="opacity-80 hover:opacity-100 cursor-pointer border-b-2 border-transparent hover:border-white h-full flex items-center">Meine Anfragen</span>
         </div>
 
         <Routes>
+          <Route path="/home" element={<HomeComponent />} />
           <Route path="/deals" element={<DealsCompoenents />} />
           <Route path="/aufgaben" element={<AufgabenComponent />} />
+          <Route path="/anrufe" element={<AnrufeComponent />} />
+          <Route path="/produkte" element={<ProdukteComponent />} />
+          <Route path="/meetings" element={<MeetingsComponent />} />
           <Route path="/:pageSlug" element={<PlaceholderPage />} />
-          <Route path="*" element={<Navigate to="/deals" replace />} />
+          <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
 
         <footer className="h-10 bg-white border-t border-slate-200 flex items-center px-4 justify-between shrink-0 text-xs text-slate-500">
