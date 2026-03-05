@@ -33,7 +33,7 @@ const DealsCompoenents: React.FC = () => {
             <h2 className="text-sm font-bold text-slate-800 mb-6 border-b border-slate-100 pb-2">Deal: Information</h2>
             <div className="grid grid-cols-2 gap-x-16">
               <div className="space-y-1">
-                <SelectField label="Deal-Besitzer" options={['Jobst von Heintze', 'Admin User']} required />
+                <SelectField label="Deal-Besitzer" options={['Maximilian Schwarz', 'Julian Wagner', 'Lukas Hoffmann', 'Elena Fischer', 'Simon Krüger']} required />
                 <InputField label="Deal-Name" required />
                 <InputField label="Firma-Name" icon={<Building2 size={14} />} />
                 <SelectField label="Sales Track" options={['Direct', 'Partner', 'Referral']} />
