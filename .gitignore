@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Python / FastAPI backend
+backend_server/.venv/
+backend_server/__pycache__/
+backend_server/.env
+backend_server/*.pyc
+
+# Node / Vite frontend
+frontend-zoho/node_modules/
+frontend-zoho/dist/
+frontend-zoho/.env
+frontend-zoho/.env.*
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
