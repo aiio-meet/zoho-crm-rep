@@ -4,6 +4,7 @@ from typing import Any
 import math
 import re
 import logging
+from time import perf_counter
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -12,11 +13,50 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
 from pydantic import BaseModel
+from langfuse import Langfuse
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag")
+
+
+def _init_langfuse() -> Langfuse | None:
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    host = os.getenv("LANGFUSE_HOST") or os.getenv("LANGFUSE_BASE_URL")
+
+    if not public_key or not secret_key:
+        logger.info("Langfuse disabled: missing LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY.")
+        return None
+
+    try:
+        client = Langfuse(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=host,
+        )
+        logger.info(
+            "Langfuse tracing active (compatible mode). host=%s public_key_prefix=%s",
+            host or "default",
+            (public_key[:8] + "...") if public_key else "missing",
+        )
+        return client
+    except Exception as exc:
+        logger.warning("Langfuse initialization failed: %s", str(exc))
+        return None
+
+
+def _flush_langfuse(client: Langfuse | None) -> None:
+    if not client:
+        return
+    try:
+        client.flush()
+    except Exception:
+        pass
+
+
+LANGFUSE_CLIENT = _init_langfuse()
 
 CHAT_SYSTEM_CONTEXT = """
 Sie sind ein RAG-gestützter Assistent für den Deal-Erstellungsprozess in Zoho CRM.
@@ -152,7 +192,7 @@ def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-async def _embed_text(client: httpx.AsyncClient, api_key: str, text: str) -> list[float]:
+async def _embed_text(client: httpx.AsyncClient, api_key: str, text: str) -> tuple[list[float], int]:
     embedding_url = (os.getenv("OPENAI_EMBEDDING_ENDPOINT") or DEFAULT_EMBEDDING_ENDPOINT).strip()
     embedding_model = (os.getenv("OPENAI_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL).strip()
 
@@ -218,7 +258,10 @@ async def _embed_text(client: httpx.AsyncClient, api_key: str, text: str) -> lis
             },
         )
 
-    return embedding
+    usage_payload = payload.get("usage", {}) if isinstance(payload, dict) else {}
+    usage_tokens = int(usage_payload.get("total_tokens", 0)) if isinstance(usage_payload, dict) else 0
+
+    return embedding, usage_tokens
 
 
 async def _build_rag_index(api_key: str) -> IngestResponse:
@@ -270,7 +313,7 @@ async def _build_rag_index(api_key: str) -> IngestResponse:
             chunks_per_file[file_path.name] = len(section_chunks)
             for chunk_index, (heading, chunk) in enumerate(section_chunks):
                 try:
-                    embedding = await _embed_text(client, api_key, chunk)
+                    embedding, _ = await _embed_text(client, api_key, chunk)
                 except HTTPException as exc:
                     detailed = exc.detail if isinstance(exc.detail, dict) else {"error": str(exc.detail)}
                     detailed.update(
@@ -395,10 +438,33 @@ async def ingest_documents() -> IngestResponse:
 
 @app.post("/chat_request", response_model=ChatResponse)
 async def chat_request(payload: ChatRequest) -> ChatResponse:
+    request_started_at = perf_counter()
+    request_span_cm = None
+    request_span = None
+
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
     api_url = (os.getenv("OPENAI_CHAT_ENDPOINT") or DEFAULT_CHAT_ENDPOINT).strip()
     model = (os.getenv("CHAT_MODEL") or DEFAULT_CHAT_MODEL).strip()
+    embedding_model = (os.getenv("OPENAI_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL).strip()
     system_context = CHAT_SYSTEM_CONTEXT
+
+    if LANGFUSE_CLIENT:
+        try:
+            logger.info("Langfuse trace start: chat_request")
+            request_span_cm = LANGFUSE_CLIENT.start_as_current_span(
+                name="chat_request",
+                input={"question": payload.question},
+                metadata={
+                    "chat_model": model,
+                    "embedding_model": embedding_model,
+                    "top_k": TOP_K,
+                    "api_url": api_url,
+                },
+                end_on_exit=False,
+            )
+            request_span = request_span_cm.__enter__()
+        except Exception as exc:
+            logger.warning("Langfuse trace creation failed: %s", str(exc))
 
     if not api_key:
         raise HTTPException(
@@ -409,9 +475,12 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
     if not RAG_INDEX:
         await _build_rag_index(api_key)
 
+    embedding_usage_tokens = 0
+    top_chunks: list[dict[str, Any]] = []
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            question_embedding = await _embed_text(client, api_key, payload.question)
+            question_embedding, embedding_usage_tokens = await _embed_text(client, api_key, payload.question)
             scored = [
                 {
                     "source": item["source"],
@@ -427,6 +496,26 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
                 item["score"] = (item["semantic_score"] * 0.85) + (item["lexical_score"] * 0.15)
 
             top_chunks = sorted(scored, key=lambda item: item["score"], reverse=True)[:TOP_K]
+
+            if LANGFUSE_CLIENT:
+                try:
+                    LANGFUSE_CLIENT.create_event(
+                        name="retrieval",
+                        input={"question": payload.question},
+                        output={
+                            "candidate_chunks": len(scored),
+                            "top_chunks": [
+                                {
+                                    "source": chunk["source"],
+                                    "heading": chunk.get("heading", ""),
+                                    "score": round(float(chunk["score"]), 6),
+                                }
+                                for chunk in top_chunks
+                            ],
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("Langfuse retrieval span failed: %s", str(exc))
 
             logger.info("RAG retrieval: total candidate chunks=%d", len(scored))
             for idx, chunk in enumerate(top_chunks, start=1):
@@ -475,11 +564,33 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
                 },
             )
     except httpx.TimeoutException as exc:
+        if LANGFUSE_CLIENT:
+            try:
+                LANGFUSE_CLIENT.create_event(name="chat_error", level="ERROR", output={"type": "timeout", "message": str(exc)})
+                if request_span:
+                    request_span.update(level="ERROR", status_message=str(exc))
+                    request_span.end()
+                if request_span_cm:
+                    request_span_cm.__exit__(None, None, None)
+                _flush_langfuse(LANGFUSE_CLIENT)
+            except Exception:
+                pass
         raise HTTPException(
             status_code=504,
             detail="The AI request timed out after 30 seconds.",
         ) from exc
     except httpx.RequestError as exc:
+        if LANGFUSE_CLIENT:
+            try:
+                LANGFUSE_CLIENT.create_event(name="chat_error", level="ERROR", output={"type": "request_error", "message": str(exc)})
+                if request_span:
+                    request_span.update(level="ERROR", status_message=str(exc))
+                    request_span.end()
+                if request_span_cm:
+                    request_span_cm.__exit__(None, None, None)
+                _flush_langfuse(LANGFUSE_CLIENT)
+            except Exception:
+                pass
         raise HTTPException(
             status_code=502,
             detail=f"Failed to reach AI service: {exc}",
@@ -496,6 +607,25 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
             if isinstance(data, dict)
             else None
         )
+        if LANGFUSE_CLIENT:
+            try:
+                LANGFUSE_CLIENT.create_event(
+                    name="chat_error",
+                    level="ERROR",
+                    output={
+                        "type": "upstream_api_error",
+                        "status_code": response.status_code,
+                        "message": api_error or response.reason_phrase or "Unknown API error",
+                    },
+                )
+                if request_span:
+                    request_span.update(level="ERROR", status_message=api_error or response.reason_phrase or "Unknown API error")
+                    request_span.end()
+                if request_span_cm:
+                    request_span_cm.__exit__(None, None, None)
+                _flush_langfuse(LANGFUSE_CLIENT)
+            except Exception:
+                pass
         raise HTTPException(
             status_code=response.status_code,
             detail=api_error or response.reason_phrase or "Unknown API error",
@@ -507,10 +637,75 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
         else None
     )
     if not answer or not isinstance(answer, str):
+        if LANGFUSE_CLIENT:
+            try:
+                LANGFUSE_CLIENT.create_event(
+                    name="chat_error",
+                    level="ERROR",
+                    output={"type": "invalid_response", "message": "The AI response did not contain usable text."},
+                )
+                if request_span:
+                    request_span.update(level="ERROR", status_message="The AI response did not contain usable text.")
+                    request_span.end()
+                if request_span_cm:
+                    request_span_cm.__exit__(None, None, None)
+                _flush_langfuse(LANGFUSE_CLIENT)
+            except Exception:
+                pass
         raise HTTPException(
             status_code=502,
             detail="The AI response did not contain usable text.",
         )
+
+    usage = data.get("usage", {}) if isinstance(data, dict) else {}
+    prompt_tokens = int(usage.get("prompt_tokens", 0)) if isinstance(usage, dict) else 0
+    completion_tokens = int(usage.get("completion_tokens", 0)) if isinstance(usage, dict) else 0
+    total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens)) if isinstance(usage, dict) else 0
+
+    if LANGFUSE_CLIENT:
+        try:
+            with LANGFUSE_CLIENT.start_as_current_generation(
+                name="chat_completion",
+                model=model,
+                input={
+                    "question": payload.question,
+                    "sources": [chunk["source"] for chunk in top_chunks],
+                    "top_chunks": [
+                        {
+                            "source": chunk["source"],
+                            "heading": chunk.get("heading", ""),
+                            "score": round(float(chunk["score"]), 6),
+                        }
+                        for chunk in top_chunks
+                    ],
+                },
+                output=answer.strip(),
+                usage_details={
+                    "input": prompt_tokens,
+                    "output": completion_tokens,
+                    "total": total_tokens,
+                },
+                metadata={
+                    "latency_ms": round((perf_counter() - request_started_at) * 1000, 2),
+                    "embedding_usage_tokens": embedding_usage_tokens,
+                },
+            ):
+                pass
+
+            if request_span:
+                request_span.update(
+                    output={
+                        "sources": [chunk["source"] for chunk in top_chunks],
+                        "answer_preview": answer.strip()[:240],
+                    }
+                )
+                request_span.end()
+            if request_span_cm:
+                request_span_cm.__exit__(None, None, None)
+        except Exception as exc:
+            logger.warning("Langfuse generation logging failed: %s", str(exc))
+        finally:
+            _flush_langfuse(LANGFUSE_CLIENT)
 
     return ChatResponse(
         answer=answer.strip(),
