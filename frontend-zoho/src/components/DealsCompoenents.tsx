@@ -38,14 +38,14 @@ const DealsCompoenents: React.FC = () => {
                 <InputField label="Firma-Name" icon={<Building2 size={14} />} />
                 <SelectField label="Sales Track" options={['Direct', 'Partner', 'Referral']} />
                 <SelectField label="Typ" options={['New Business', 'Existing Business']} />
-                <InputField label="Erwartete Einnahmen" icon={<Lock size={14} />} suffix="€" />
+                <InputField label="Erwartete Einnahmen" icon={<Lock size={14} />} prefix="€" />
                 <SelectField label="Lead-Quelle" options={['Advertisement', 'Cold Call', 'Employee Referral']} />
                 <InputField label="Kontakt-Name" icon={<Users size={14} />} />
                 <SelectField label="Co-Betreuung" options={['None', 'Sales Team A']} />
                 <SelectField label="Währung" options={['EUR', 'USD', 'GBP']} />
               </div>
               <div className="space-y-1">
-                <InputField label="Betrag" suffix="€" icon={<HelpCircle size={14} />} />
+                <InputField label="Betrag" prefix="€" icon={<HelpCircle size={14} />} />
                 <InputField label="Abschlussdatum" placeholder="DD.MM.YYYY" />
                 <SelectField label="Pipeline" options={['Value Based Pipe', 'Standard Pipe']} />
                 <SelectField label="Stufe" options={['Discovery', 'Qualification', 'Proposal']} />

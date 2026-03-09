@@ -8,6 +8,7 @@ interface InputFieldProps {
   required?: boolean;
   className?: string;
   icon?: React.ReactNode;
+  prefix?: string;
   suffix?: string;
 }
 
@@ -18,6 +19,7 @@ export const InputField: React.FC<InputFieldProps> = ({
   required,
   className,
   icon,
+  prefix,
   suffix,
 }) => {
   return (
@@ -30,10 +32,23 @@ export const InputField: React.FC<InputFieldProps> = ({
         <input
           type={type}
           placeholder={placeholder}
-          className="w-full h-8 px-2 border border-slate-300 rounded focus:outline-none focus:border-blue-500 text-sm"
+          className={cn(
+            "w-full h-8 px-2 border border-slate-300 rounded focus:outline-none focus:border-blue-500 text-sm",
+            prefix && "pl-8",
+            (icon || suffix) && "pr-16"
+          )}
         />
-        {icon && <div className="absolute right-2 text-slate-400">{icon}</div>}
-        {suffix && <div className="ml-2 text-sm text-slate-500">{suffix}</div>}
+        {prefix && (
+          <div className="absolute left-2 text-sm text-slate-500 pointer-events-none">
+            {prefix}
+          </div>
+        )}
+        {(icon || suffix) && (
+          <div className="absolute right-2 flex items-center gap-2 text-slate-400 pointer-events-none">
+            {icon && <span>{icon}</span>}
+            {suffix && <span className="text-sm text-slate-500">{suffix}</span>}
+          </div>
+        )}
       </div>
     </div>
   );

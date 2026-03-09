@@ -63,10 +63,10 @@ Sie sind ein RAG-gestützter Assistent für den Deal-Erstellungsprozess in Zoho 
 Nutzen Sie ausschließlich die bereitgestellten, abgerufenen Kontext-Chunks als Wissensgrundlage.
 Verwenden Sie kein allgemeines Trainingswissen für inhaltliche Aussagen.
 
-Die bereitgestellten Dokumente decken insbesondere diese Prozessbereiche ab:
-- 01_Vorgaenger_Lead_Qualifizierung.md (alles vor dem Deal: Lead-Erfassung, Qualifizierung, Konvertierung)
-- 03_Nachfolger_Deal_Closing.md (während des Deal-Closings: Discovery, Demo/PoC, Angebot, Verhandlung, Vertrag)
-- 04_Deal_to_Order_to_Cash_to_Use.md (nach dem Deal: Order-to-Cash, Onboarding, Customer Success, Renewal/Expansion)
+Dokument-Hierarchie und Zweck:
+- Arbeitsanweisung_Deal_anlegen_CRM.md ist die primäre Quelle für Fragen zu Feldern, Pflichtfeldern, Ausfülllogik, Validierung und Folgen bei fehlenden/fehlerhaften Eingaben.
+- 01_Vorgaenger_Lead_Qualifizierung.md, 03_Nachfolger_Deal_Closing.md und 04_Deal_to_Order_to_Cash_to_Use.md sind unterstützende Kontextquellen für Prozessfragen (vor, während, nach dem Deal).
+- Bei Feldfragen hat die Arbeitsanweisung Vorrang. Die anderen drei Quellen nur ergänzend verwenden, falls sie zusätzliche Klarheit liefern.
 
 Antwortregeln:
 1) Antworten Sie präzise, praxisnah und in höflicher Sie-Form auf Deutsch.
@@ -74,14 +74,24 @@ Antwortregeln:
 3) Wenn der Kontext für eine Frage nicht ausreicht, sagen Sie klar: "Dazu liegen im bereitgestellten Kontext keine ausreichenden Informationen vor."
 4) Erfinden Sie keine Fakten, Prozesse, Freigaben oder Zuständigkeiten.
 5) Nennen Sie Annahmen nur dann, wenn sie explizit als Annahmen gekennzeichnet sind.
+6) Antworten Sie immer in Markdown.
+7) Heben Sie die wichtigsten Teile der Antwort sichtbar hervor, damit sie im Markdown hervorgehoben dargestellt werden (z.B. mit **Fettschrift**).
+8) Nutzen Sie für kritische Hinweise eine eigene Zeile mit Präfix "**Wichtig:**".
 
 Thematischer Fokus:
 - Beantworten Sie die konkrete Nutzerfrage ausschließlich auf Basis der abgerufenen Kontext-Chunks.
+- Bei Feldfragen zuerst die konkrete Feldregel nennen, danach die Konsequenz bei fehlender/fehlerhafter Befüllung.
 - Fassen Sie relevante Aussagen aus dem Kontext präzise und umsetzbar zusammen.
 - Benennen Sie fehlende Informationen klar, statt sie zu ergänzen oder zu raten.
 - Verweisen Sie inhaltlich auf den gelieferten Kontext (Quelle/Chunk), wenn es zur Nachvollziehbarkeit beiträgt.
-- Strukturieren Sie Antworten entlang des Prozessverlaufs: vor dem Deal, während Deal-Closing, nach dem Deal.
+- Strukturieren Sie Antworten für Prozessfragen entlang des Verlaufs: vor dem Deal, während Deal-Closing, nach dem Deal.
 - Benennen Sie Rollen, Trigger, Pflichtinformationen, Wenn/Dann-Regeln und Übergaben nur dann, wenn sie im Kontext enthalten sind.
+
+Ausgabeformat (Markdown):
+- Starten Sie mit einer kurzen direkten Antwort in 1-2 Sätzen.
+- Danach 3-6 Stichpunkte mit den wichtigsten Fakten.
+- Heben Sie Schlüsselaussagen mit **Fettschrift** hervor.
+- Geben Sie keine Quellenzeile und kein "Quelle:" im Antworttext aus.
 """.strip()
 
 DEFAULT_CHAT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
@@ -89,9 +99,37 @@ DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_EMBEDDING_ENDPOINT = "https://api.openai.com/v1/embeddings"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DATA_DIR = Path(__file__).parent / "data"
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
-TOP_K = 4
+PRIMARY_SOURCE_FILE = os.getenv("RAG_PRIMARY_SOURCE_FILE", "Arbeitsanweisung_Deal_anlegen_CRM.md").strip()
+
+CHUNK_MODE = (os.getenv("RAG_CHUNK_MODE") or "word").strip().lower()
+CHUNK_SIZE_CHARS = int(os.getenv("RAG_CHUNK_SIZE_CHARS", "1000"))
+CHUNK_OVERLAP_CHARS = int(os.getenv("RAG_CHUNK_OVERLAP_CHARS", "200"))
+CHUNK_SIZE_WORDS = int(os.getenv("RAG_CHUNK_SIZE_WORDS", "200"))
+CHUNK_OVERLAP_WORDS = int(os.getenv("RAG_CHUNK_OVERLAP_WORDS", "50"))
+
+TOP_K = int(os.getenv("RAG_TOP_K", "4"))
+SEMANTIC_WEIGHT = float(os.getenv("RAG_SEMANTIC_WEIGHT", "0.85"))
+LEXICAL_WEIGHT = float(os.getenv("RAG_LEXICAL_WEIGHT", "0.15"))
+
+PRIMARY_BOOST_DEFAULT = float(os.getenv("RAG_PRIMARY_BOOST_DEFAULT", "1.05"))
+PRIMARY_BOOST_FIELD_QUERY = float(os.getenv("RAG_PRIMARY_BOOST_FIELD_QUERY", "1.35"))
+FIELD_PRIMARY_MIN_SLOTS = int(os.getenv("RAG_FIELD_PRIMARY_MIN_SLOTS", "2"))
+MIN_RETRIEVAL_SCORE = float(os.getenv("RAG_MIN_RETRIEVAL_SCORE", "0.15"))
+FIELD_QUERY_KEYWORDS = {
+    "feld",
+    "pflichtfeld",
+    "leer",
+    "ausfuellen",
+    "ausgefüllt",
+    "nicht ausgefuellt",
+    "nicht ausgefüllt",
+    "validierung",
+    "speichern",
+    "deal-name",
+    "deal besitzer",
+    "naechster schritt",
+    "nächster schritt",
+}
 
 RAG_INDEX: list[dict[str, Any]] = []
 
@@ -125,7 +163,30 @@ class IndexSampleItem(BaseModel):
     embedding_dimensions: int
 
 
-def _split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
+class ClearIndexResponse(BaseModel):
+    status: str
+    message: str
+    cleared_chunks: int
+
+
+def _normalize_chunk_mode(raw_mode: str) -> str:
+    if raw_mode in {"word", "char"}:
+        return raw_mode
+    logger.warning("Unsupported RAG_CHUNK_MODE '%s'. Falling back to 'word'.", raw_mode)
+    return "word"
+
+
+def _get_active_chunk_settings() -> tuple[str, int, int]:
+    mode = _normalize_chunk_mode(CHUNK_MODE)
+    if mode == "char":
+        return mode, max(200, CHUNK_SIZE_CHARS), max(20, CHUNK_OVERLAP_CHARS)
+    return mode, max(50, CHUNK_SIZE_WORDS), max(0, CHUNK_OVERLAP_WORDS)
+
+
+def _split_text_by_chars(text: str, chunk_size: int, overlap: int) -> list[str]:
+    if overlap >= chunk_size:
+        overlap = max(0, chunk_size // 4)
+
     clean_text = "\n".join(line.rstrip() for line in text.splitlines()).strip()
     if not clean_text:
         return []
@@ -142,6 +203,34 @@ def _split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OV
             break
         start = max(0, end - overlap)
     return chunks
+
+
+def _split_text_by_words(text: str, chunk_size: int, overlap: int) -> list[str]:
+    if overlap >= chunk_size:
+        overlap = max(0, chunk_size // 4)
+
+    tokens = re.findall(r"\S+", text)
+    if not tokens:
+        return []
+
+    chunks: list[str] = []
+    step = max(1, chunk_size - overlap)
+    for start in range(0, len(tokens), step):
+        end = min(start + chunk_size, len(tokens))
+        chunk = " ".join(tokens[start:end]).strip()
+        if chunk:
+            chunks.append(chunk)
+        if end == len(tokens):
+            break
+
+    return chunks
+
+
+def _split_text(text: str) -> list[str]:
+    mode, chunk_size, overlap = _get_active_chunk_settings()
+    if mode == "char":
+        return _split_text_by_chars(text, chunk_size=chunk_size, overlap=overlap)
+    return _split_text_by_words(text, chunk_size=chunk_size, overlap=overlap)
 
 
 def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
@@ -170,6 +259,66 @@ def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
 
 def _tokenize(text: str) -> set[str]:
     return {token for token in re.findall(r"[a-zA-ZäöüÄÖÜß0-9]+", text.lower()) if len(token) > 2}
+
+
+def _normalize_text(text: str) -> str:
+    normalized = text.lower()
+    substitutions = {
+        "ä": "ae",
+        "ö": "oe",
+        "ü": "ue",
+        "ß": "ss",
+    }
+    for old, new in substitutions.items():
+        normalized = normalized.replace(old, new)
+    return normalized
+
+
+def _is_field_focused_question(question: str) -> bool:
+    normalized_question = _normalize_text(question)
+    normalized_keywords = {_normalize_text(keyword) for keyword in FIELD_QUERY_KEYWORDS}
+    return any(keyword in normalized_question for keyword in normalized_keywords)
+
+
+def _base_source_boost(source_name: str) -> float:
+    if source_name == PRIMARY_SOURCE_FILE:
+        return PRIMARY_BOOST_DEFAULT
+    return 1.0
+
+
+def _score_source_boost(source_name: str, is_field_focused: bool) -> float:
+    boost = _base_source_boost(source_name)
+    if is_field_focused and source_name == PRIMARY_SOURCE_FILE:
+        boost = max(boost, PRIMARY_BOOST_FIELD_QUERY)
+    return boost
+
+
+def _pick_top_chunks(scored: list[dict[str, Any]], is_field_focused: bool) -> list[dict[str, Any]]:
+    if not scored:
+        return []
+
+    ranked = sorted(scored, key=lambda item: item["score"], reverse=True)
+    if not is_field_focused:
+        return ranked[:TOP_K]
+
+    primary_ranked = [item for item in ranked if item["source"] == PRIMARY_SOURCE_FILE]
+    reserved_primary = primary_ranked[: max(0, FIELD_PRIMARY_MIN_SLOTS)]
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[int] = set()
+    for item in reserved_primary:
+        selected.append(item)
+        selected_ids.add(id(item))
+
+    for item in ranked:
+        if id(item) in selected_ids:
+            continue
+        selected.append(item)
+        selected_ids.add(id(item))
+        if len(selected) >= TOP_K:
+            break
+
+    return selected[:TOP_K]
 
 
 def _lexical_overlap_score(query: str, text: str) -> float:
@@ -289,6 +438,8 @@ async def _build_rag_index(api_key: str) -> IngestResponse:
     new_index: list[dict[str, Any]] = []
     chunks_per_file: dict[str, int] = {}
 
+    chunk_mode, chunk_size, chunk_overlap = _get_active_chunk_settings()
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         for file_path in markdown_files:
             try:
@@ -332,6 +483,10 @@ async def _build_rag_index(api_key: str) -> IngestResponse:
                         "heading": heading,
                         "text": chunk,
                         "embedding": embedding,
+                        "chunk_mode": chunk_mode,
+                        "chunk_size_used": chunk_size,
+                        "chunk_overlap_used": chunk_overlap,
+                        "source_boost": _base_source_boost(file_path.name),
                     }
                 )
 
@@ -408,6 +563,17 @@ def index_sample(limit: int = Query(default=5, ge=1, le=20)) -> list[IndexSample
     ]
 
 
+@app.post("/clear_indexes", response_model=ClearIndexResponse)
+def clear_indexes() -> ClearIndexResponse:
+    cleared_chunks = len(RAG_INDEX)
+    RAG_INDEX.clear()
+    return ClearIndexResponse(
+        status="success",
+        message="RAG index cleared successfully.",
+        cleared_chunks=cleared_chunks,
+    )
+
+
 @app.post("/ingest_documents", response_model=IngestResponse)
 async def ingest_documents() -> IngestResponse:
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
@@ -481,6 +647,8 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             question_embedding, embedding_usage_tokens = await _embed_text(client, api_key, payload.question)
+            is_field_focused = _is_field_focused_question(payload.question)
+
             scored = [
                 {
                     "source": item["source"],
@@ -493,9 +661,31 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
             ]
 
             for item in scored:
-                item["score"] = (item["semantic_score"] * 0.85) + (item["lexical_score"] * 0.15)
+                base_score = (item["semantic_score"] * SEMANTIC_WEIGHT) + (item["lexical_score"] * LEXICAL_WEIGHT)
+                source_boost = _score_source_boost(item["source"], is_field_focused=is_field_focused)
+                item["source_boost"] = source_boost
+                item["score"] = base_score * source_boost
 
-            top_chunks = sorted(scored, key=lambda item: item["score"], reverse=True)[:TOP_K]
+            top_chunks = _pick_top_chunks(scored, is_field_focused=is_field_focused)
+
+            if top_chunks and top_chunks[0]["score"] < MIN_RETRIEVAL_SCORE:
+                logger.info(
+                    "RAG retrieval below threshold: top score=%.4f threshold=%.4f",
+                    top_chunks[0]["score"],
+                    MIN_RETRIEVAL_SCORE,
+                )
+                if request_span:
+                    request_span.update(
+                        output={"sources": [], "answer_preview": "Insufficient context threshold triggered."}
+                    )
+                    request_span.end()
+                if request_span_cm:
+                    request_span_cm.__exit__(None, None, None)
+                _flush_langfuse(LANGFUSE_CLIENT)
+                return ChatResponse(
+                    answer="Dazu liegen im bereitgestellten Kontext keine ausreichenden Informationen vor.",
+                    sources=[],
+                )
 
             if LANGFUSE_CLIENT:
                 try:
@@ -504,11 +694,13 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
                         input={"question": payload.question},
                         output={
                             "candidate_chunks": len(scored),
+                            "field_focused": is_field_focused,
                             "top_chunks": [
                                 {
                                     "source": chunk["source"],
                                     "heading": chunk.get("heading", ""),
                                     "score": round(float(chunk["score"]), 6),
+                                    "source_boost": round(float(chunk.get("source_boost", 1.0)), 4),
                                 }
                                 for chunk in top_chunks
                             ],
@@ -521,11 +713,12 @@ async def chat_request(payload: ChatRequest) -> ChatResponse:
             for idx, chunk in enumerate(top_chunks, start=1):
                 preview = chunk["text"].replace("\n", " ")[:140]
                 logger.info(
-                    "RAG top%d: source=%s | heading=%s | score=%.4f | semantic=%.4f | lexical=%.4f | preview=%s",
+                    "RAG top%d: source=%s | heading=%s | score=%.4f | boost=%.3f | semantic=%.4f | lexical=%.4f | preview=%s",
                     idx,
                     chunk["source"],
                     chunk.get("heading", ""),
                     chunk["score"],
+                    chunk.get("source_boost", 1.0),
                     chunk["semantic_score"],
                     chunk["lexical_score"],
                     preview,
