@@ -31,10 +31,23 @@ import AnrufeComponent from './components/AnrufeComponent';
 import ProdukteComponent from './components/ProdukteComponent';
 import MeetingsComponent from './components/MeetingsComponent';
 import HomeComponent from './components/HomeComponent';
+import FirmenComponent from './components/FirmenComponent';
 import PlaceholderPage from './components/PlaceholderPage';
 import { cn } from './lib/utils';
 
 export default function App() {
+  const nonNavigablePaths = new Set([
+    '/arbeitswarteschlange',
+    '/leads',
+    '/kontakte',
+    '/angebote',
+    '/auftraege',
+    '/bestellungen',
+    '/rechnungen',
+    '/feeds',
+    '/kampagnen',
+  ]);
+
   const sidebarItems = [
     { icon: <History size={18} />, label: 'Arbeitswarteschlange', path: '/arbeitswarteschlange', badge: '✨' },
     { icon: <Users size={18} />, label: 'Leads', path: '/leads' },
@@ -77,17 +90,29 @@ export default function App() {
         </div>
 
         <nav className="flex-1 overflow-y-auto scrollbar-hide">
-          {sidebarItems.map((item) => (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              className={({ isActive }) => cn('sidebar-item', isActive && 'active')}
-            >
-              {item.icon}
-              <span className="flex-1">{item.label}</span>
-              {item.badge && <span className="text-xs">{item.badge}</span>}
-            </NavLink>
-          ))}
+          {sidebarItems.map((item) => {
+            if (nonNavigablePaths.has(item.path)) {
+              return (
+                <button key={item.path} type="button" className="sidebar-item w-full text-left">
+                  {item.icon}
+                  <span className="flex-1">{item.label}</span>
+                  {item.badge && <span className="text-xs">{item.badge}</span>}
+                </button>
+              );
+            }
+
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                className={({ isActive }) => cn('sidebar-item', isActive && 'active')}
+              >
+                {item.icon}
+                <span className="flex-1">{item.label}</span>
+                {item.badge && <span className="text-xs">{item.badge}</span>}
+              </NavLink>
+            );
+          })}
         </nav>
 
         <div className="p-4 border-t border-slate-700">
@@ -124,7 +149,7 @@ export default function App() {
             <Mail size={18} className="text-slate-500" />
             <Bell size={18} className="text-slate-500" />
             <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold">
-              JH
+              MS
             </div>
           </div>
         </header>
@@ -144,6 +169,7 @@ export default function App() {
           <Route path="/anrufe" element={<AnrufeComponent />} />
           <Route path="/produkte" element={<ProdukteComponent />} />
           <Route path="/meetings" element={<MeetingsComponent />} />
+          <Route path="/firmen" element={<FirmenComponent />} />
           <Route path="/:pageSlug" element={<PlaceholderPage />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
